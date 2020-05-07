@@ -1,0 +1,262 @@
+---
+title: "Object Detection using CNN"
+author: "Group 6"
+output:
+  html_document:
+    theme: lumen
+    highlight: haddock
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+## Libraries
+```{r}
+library(keras)
+```
+
+
+## Image Directory
+Images are bifurcated as **train, validation, and test ** , put up in the respective folders of specified directory. Each split folder has images with their category as labels. Here our labels are **flags ang guns**. Train, Test and Validation folders have 80,20,20 images respectively.
+```{r}
+image_dir <- "./images"
+
+train_dir <- file.path(image_dir, "train")
+val_dir <- file.path(image_dir, "validation")
+labels <- c()
+images <- c()
+for (label_type in c("flags", "guns")) {
+  label <- switch(label_type, flags = "flags", guns = "guns")
+  dir_name <- file.path(train_dir, label_type)
+  for (fname in list.files(dir_name, pattern = glob2rx("*.jpg"),
+                           full.names = TRUE)) {
+    images <- c(images, readChar(fname, file.info(fname)$size))
+    labels <- c(labels, label)
+  }
+}
+
+list.files(train_dir)
+```
+
+
+## Convolutional Neural Networks
+Convolutional neural networks (CNNs) are a special type of NNs well poised for image processing. Neural Network was built using keras framework, comprises of Input layer, several ConvNet layers, dense layers and an output layer. 
+
+
+At each stage of network we have applied 32,64,128,128 filters  with **kernel** size of 3X3 window which convolve square blocks of pixels into scalars in subsequent convolutional layers.Throughout the process, the kernel performs element-wise multiplication and sums up all products, into a single value passed to the subsequent convolutional layer. 
+
+
+To downsample the layers we have implemented **max pooling** technique with 2X2 window of 2 strides. Pooling is a strategic downsampling from a convolutional layer, rendering representations of predominant features in lower dimensions, preventing overfitting and alleviating computational demand.
+
+
+Flattening, as the name suggest, simply converts the last convolutional layer into a one-dimensional NN layer. It sets the stage for the actual predictions.
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "relu",
+                input_shape = c(150, 150, 3)) %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_conv_2d(filters = 128, kernel_size = c(3, 3), activation = "relu") %>% 
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>% 
+  layer_flatten() %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = 512, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+summary(model)
+```
+```{r}
+model %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(lr = 1e-4),
+  metrics = c("acc"))
+```
+
+
+Due to presence of fully connected layers in most of the neural networks, the images being fed to network will be required of a fixed size.Because of this, before the image augmentation happens, let us preprocess the images to the size which our network needs. 
+
+
+Rescaling the Image data with target size of 150X150.
+```{r}
+train_datagen <- image_data_generator(rescale = 1/255)
+validation_datagen <- image_data_generator(rescale = 1/255)
+
+train_generator <- flow_images_from_directory(
+  # This is the target directory
+  train_dir,
+  # This is the data generator
+  train_datagen,
+  # All images will be resized to 150x150
+  target_size = c(150, 150),
+  batch_size = 20,
+  # Since we use binary_crossentropy loss, we need binary labels
+  class_mode = "binary"
+)
+
+validation_generator <- flow_images_from_directory(
+  val_dir,
+  validation_datagen,
+  target_size = c(150, 150),
+  batch_size = 5,
+  class_mode = "binary"
+)
+
+batch <- generator_next(train_generator)
+```
+
+
+**Training and Validation**
+```{r}
+history <- model %>% fit_generator(
+  train_generator,
+  steps_per_epoch = 100,
+  epochs = 5,
+  validation_data = validation_generator,
+  validation_steps = 50
+)
+```
+```{r,echo=FALSE,fig.align="center"}
+plot(history)
+```
+
+
+Saving the network
+```{r}
+model %>% save_model_hdf5("guns_and_flags.h5")
+```
+
+
+## Data Augmentation
+```{r}
+#Data Augmentation
+datagen <- image_data_generator(
+  rescale = 1/255,
+  rotation_range = 45,
+  width_shift_range = 0.1,
+  height_shift_range = 0.1,
+  shear_range = 0.4,
+  zoom_range = 0.2,
+  horizontal_flip = TRUE,
+  fill_mode = "nearest"
+)
+
+plot_folder <- function(folder,file){
+train1<- file.path(train_dir,folder )
+
+fnames <- list.files(train1, full.names = TRUE)
+
+img_path<-fnames[[file]]
+
+img<-image_load(img_path, target_size = c(150,150))
+img_array <- image_to_array(img)
+
+img_array <- array_reshape(img_array, c(1,150,150,3))
+
+img_tensor<-img_array/255
+
+augmentation_generator <- flow_images_from_data(
+  img_array,
+  generator = datagen,
+  batch_size = 1
+)
+
+op <- par(mfrow = c(3,2), pty = "s", mar = c(1,1,1,1))
+for(i in 1:6){
+  batch <- generator_next(augmentation_generator)
+  plot(as.raster(batch[1,,,]))
+}
+par(op)
+
+#Visualizing all output tensors
+
+layer_outputs <- lapply(model$layers[1:8], function(layer) layer$output)
+activation_model <- keras_model(inputs = model$input, outputs = layer_outputs)
+
+# Running Model in Predict Mode
+activations <- activation_model %>% predict(img_tensor)
+
+#Plotting Channel
+plot_channel <- function(channel){
+  rotate <- function(x) t(apply(x,2,rev))
+  image(rotate(channel), axes = FALSE, asp = 1,
+        col = terrain.colors(12))
+}
+
+image_size <- 58
+images_per_row <- 16
+for (i in 1:8) {
+  layer_activation <- activations[[i]]
+  layer_name <- model$layers[[i]]$name
+  n_features <- dim(layer_activation)[[4]]
+  n_cols <- n_features %/% images_per_row
+  png(paste0(folder, i, "_", layer_name, ".png"),
+      width = image_size * images_per_row,
+      height = image_size * n_cols,res=464)
+  op <- par(mfrow = c(n_cols, images_per_row), mai = rep_len(0.02, 4))
+  for (col in 0:(n_cols-1)) {
+    for (row in 0:(images_per_row-1)) {
+      channel_image <- layer_activation[1,,,(col*images_per_row) + row + 1]
+      plot_channel(channel_image)
+    }
+  }
+  par(op)
+  dev.off()
+}
+}
+
+plot_folder("flags",20)
+plot_folder("guns",14)
+```
+![Convolution Layer 1](./Layers/flags1_conv2d.png)
+
+![Max Pooling Layer 1](./Layers/flags2_max_pooling2d.png)
+
+![Convolution Layer 2](./Layers/flags3_conv2d_1.png)
+
+![Max Pooling Layer 2](./Layers/flags4_max_pooling2d_1.png)
+
+![Convolution Layer 3](./Layers/flags5_conv2d_2.png)
+
+![Max Pooling Layer 3](./Layers/flags6_max_pooling2d_2.png)
+
+![Convolution Layer 4](./Layers/flags7_conv2d_3.png)
+
+![Max Pooling Layer 4](./Layers/flags8_max_pooling2d_3.png)
+
+
+There are few things to note here:
+
+
+* The first layer acts as a collection of various edge detectors. At that stage, th activations retain almost all of the information present in the initial picture.
+
+
+* As you go higher, the activations become increasingly abstract and less visually interpretable. They begin to encode higher-level concepts such as "wavings of the falg" or the "nozzel of the gun". Higher presentations carry increasingly less information about the visual contents of the image, and increasingly less information related to the class of the image.
+
+
+* The sparsity of the activations is increasing with the depth of the layer: in the first layer, all filters are activated by the input iamge, but in the following layers some filters are blank. This means that the pattern encoded by the filter isn't found in the input image.
+
+
+## Result
+Evaluating the model result
+```{r}
+#testing
+test_dir <- file.path(image_dir, "test")
+test_datagen <- image_data_generator(rescale = 1/255)
+
+test_generator <- flow_images_from_directory(
+  # This is the target directory
+  test_dir,
+  # This is the data generator
+  test_datagen,
+  # All images will be resized to 150x150
+  target_size = c(150, 150),
+  batch_size = 20,
+  # Since we use binary_crossentropy loss, we need binary labels
+  class_mode = "binary"
+)
+
+model %>% evaluate_generator(test_generator, steps = 50)
+```
